@@ -1,0 +1,60 @@
+name: Sync proxy nodes
+
+on:
+  schedule:
+    # GitHub Actions uses UTC. This is 10:15 in Beijing (UTC+8).
+    - cron: "15 2 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/sync-nodes.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-proxy-nodes
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download and validate upstream nodes
+        shell: bash
+        env:
+          UPSTREAM_URL: https://raw.githubusercontent.com/bbq-051116/TG-iamdt009/main/%E8%8A%82%E7%82%B9%EF%BC%81%E8%BF%99%E6%98%AF%E8%8A%82%E7%82%B9%EF%BC%81
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-delay 5 \
+            "$UPSTREAM_URL" \
+            --output 1.txt.new
+
+          test -s 1.txt.new
+          if ! grep -Eq '^(anytls|https|snell|socks5|ss|vless)://' 1.txt.new; then
+            echo "Upstream response does not contain supported proxy URLs" >&2
+            exit 1
+          fi
+
+          mv 1.txt.new 1.txt
+
+      - name: Commit updated nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$(git status --porcelain -- 1.txt)" ]]; then
+            echo "No upstream changes"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add 1.txt
+          git commit -m "chore: sync upstream nodes"
+          git push
