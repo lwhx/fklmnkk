@@ -25,23 +25,75 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download and validate upstream nodes
+      - name: Discover and download upstream nodes
         shell: bash
         env:
-          UPSTREAM_URL: https://raw.githubusercontent.com/bbq-051116/TG-iamdt009/main/%E8%8A%82%E7%82%B9%EF%BC%81%E8%BF%99%E6%98%AF%E8%8A%82%E7%82%B9%EF%BC%81
+          UPSTREAM_API: https://api.github.com/repos/bbq-051116/TG-iamdt009/contents
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --location \
-            --retry 3 --retry-delay 5 \
-            "$UPSTREAM_URL" \
-            --output 1.txt.new
+
+          python3 <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          api_url = os.environ["UPSTREAM_API"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "User-Agent": "lwhx-fklmnkk-node-sync",
+          }
+          proxy_pattern = re.compile(
+              rb"(?m)^(?:anytls|hysteria2?|https?|juicity|naive|shadowtls|"
+              rb"snell|socks5?|ss|ssr|trojan|tuic|vless|vmess|wireguard)://"
+          )
+
+          def download(url: str) -> bytes:
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return response.read()
+
+          listing = json.loads(download(api_url))
+          candidates = []
+
+          for item in listing:
+              if item.get("type") != "file":
+                  continue
+              if not item.get("download_url"):
+                  continue
+              if item.get("size", 0) > 5 * 1024 * 1024:
+                  print(f"Skipping oversized file: {item.get('name')}")
+                  continue
+
+              try:
+                  content = download(item["download_url"])
+              except Exception as exc:
+                  print(f"Could not read {item.get('name')}: {exc}", file=sys.stderr)
+                  continue
+
+              count = len(proxy_pattern.findall(content))
+              print(f"Scanned {item.get('name')}: {count} proxy records")
+              if count:
+                  candidates.append((count, item.get("name", "unknown"), content))
+
+          if not candidates:
+              raise SystemExit("No upstream file contains proxy URLs; keeping existing 1.txt")
+
+          count, name, content = max(candidates, key=lambda candidate: candidate[0])
+          if count < 5:
+              raise SystemExit(
+                  f"Best candidate {name!r} has only {count} proxy records; "
+                  "refusing to replace existing 1.txt"
+              )
+
+          Path("1.txt.new").write_bytes(content)
+          print(f"Selected {name}: {count} proxy records")
+          PY
 
           test -s 1.txt.new
-          if ! grep -Eq '^(anytls|https|snell|socks5|ss|vless)://' 1.txt.new; then
-            echo "Upstream response does not contain supported proxy URLs" >&2
-            exit 1
-          fi
-
           mv 1.txt.new 1.txt
 
       - name: Commit updated nodes
